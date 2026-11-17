@@ -16,6 +16,14 @@ model looks at the head-camera image, measures points in it and sends structured
 harness plans them, hands them to a tracking controller and reports back. The same interface drives a MuJoCo
 simulation and the real robot.
 
+## Codex agent experiments in this fork
+
+This fork preserves the HITCH control pipeline and adds two model entry points:
+[Entry A](docs/DEEPSEEK.md) uses the original tool loop with a DeepSeek API;
+[Entry B](docs/CODING.md) uses an installed Codex CLI to write and run Python programs
+against the same persistent robot tools. See the [initial pilot results](docs/CODING_RESULTS.md).
+Codex is an external dependency; API credentials and generated episode data are not part of this repository.
+
 ## Architecture
 
 ![The processes of the harness and the interfaces between them](docs/architecture.png)

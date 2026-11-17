@@ -26,7 +26,7 @@ include = [
 
 # Data the packages read beside their modules.
 [tool.setuptools.package-data]
-wbc = ["agent/prompts/*.md", "agent/tasks/*.md", "agent/backends.yaml"]
+wbc = ["agent/prompts/*.md", "agent/tasks/*.md", "agent/backends.yaml", "coding/models.json"]
 
 [dependency-groups]
 dev = ["ruff==0.17.0"]  # ruff check and ruff format --check over src
