@@ -75,13 +75,7 @@ class MujocoBridge(ProtocolBridge):
     def __init__(self, args):
         super().__init__(args)
         self.build_scene()
-        actuated = self.model.actuator_trnid[: len(JOINTS), 0]  # finger actuators, if any, follow the 29 motors
-        if tuple(self.model.joint(int(j)).name for j in actuated) != JOINTS:
-            raise ValueError("model actuators are not in the canonical joint order")
-        self.qadr, self.vadr = body_joint_addresses(self.model)
-        _, self.robot_nv = robot_extent(self.model)
-        self.bounds = self.model.jnt_range[actuated]
-        hold_fingers(self.model, self.data)
+        self.configure_robot()
         self.finger_commands = FingerCommands(args.channel.parent)
         self.finger_stages = {}  # side -> [(frame, joints)] still to open
         self.substeps = round(CONTROL_DT / self.model.opt.timestep)
@@ -92,6 +86,31 @@ class MujocoBridge(ProtocolBridge):
         self.dropped_log_frames = 0
         # last: the launcher polls for it, and everything above is in place by then
         write_json_atomic(self.directory / "bridge.json", self.bridge_info())
+
+    def configure_robot(self) -> None:
+        actuated = self.model.actuator_trnid[: len(JOINTS), 0]  # fingers follow the 29 body motors
+        if tuple(self.model.joint(int(j)).name for j in actuated) != JOINTS:
+            raise ValueError("model actuators are not in the canonical joint order")
+        self.qadr, self.vadr = body_joint_addresses(self.model)
+        _, self.robot_nv = robot_extent(self.model)
+        self.bounds = self.model.jnt_range[actuated]
+        hold_fingers(self.model, self.data)
+
+    def set_fingers(self, side, *, closed, joints=None) -> None:
+        set_fingers(self.model, self.data, side, closed=closed, joints=joints)
+
+    def advance(self, target, kp, kd) -> None:
+        m, d = self.model, self.data
+        if self.started:
+            for _ in range(self.substeps):
+                torque = kp * (target - d.qpos[self.qadr]) - kd * d.qvel[self.vadr]
+                d.ctrl[: len(JOINTS)] = np.clip(
+                    torque, m.actuator_ctrlrange[: len(JOINTS), 0], m.actuator_ctrlrange[: len(JOINTS), 1]
+                )
+                mujoco.mj_step(m, d)
+        else:
+            set_robot_pose(m, d, np.r_[self.initial[:7], target])
+            d.qvel[: self.robot_nv] = 0.0
 
     def build_scene(self) -> None:
         """Set ``model``, ``data`` (the settled start state) and ``initial``, and write
@@ -118,29 +137,20 @@ class MujocoBridge(ProtocolBridge):
             for side, state in changes.items():
                 self.finger_stages.pop(side, None)
                 if state == "closed":
-                    set_fingers(m, d, side, closed=True)
+                    self.set_fingers(side, closed=True)
                 else:  # thumb first (Hand.release)
                     self.finger_stages[side] = [
                         (self.frame + round(delay * FPS), joints) for delay, joints in current_hand().release()
                     ]
             for side, stages in list(self.finger_stages.items()):
                 while stages and stages[0][0] <= self.frame:
-                    set_fingers(m, d, side, closed=False, joints=stages.pop(0)[1])
+                    self.set_fingers(side, closed=False, joints=stages.pop(0)[1])
                 if not stages:
                     del self.finger_stages[side]
             if changes:
                 with (self.directory / "fingers.jsonl").open("a") as log:
                     log.write(json.dumps({"frame": self.frame, "time": float(d.time), **changes}) + "\n")
-        if self.started:
-            for _ in range(self.substeps):
-                torque = kp * (target - d.qpos[self.qadr]) - kd * d.qvel[self.vadr]
-                d.ctrl[: len(JOINTS)] = np.clip(
-                    torque, m.actuator_ctrlrange[: len(JOINTS), 0], m.actuator_ctrlrange[: len(JOINTS), 1]
-                )
-                mujoco.mj_step(m, d)
-        else:
-            set_robot_pose(m, d, np.r_[self.initial[:7], target])
-            d.qvel[: self.robot_nv] = 0.0
+        self.advance(target, kp, kd)
         mujoco.mj_forward(m, d)
         if not np.isfinite(d.qpos).all():
             raise FloatingPointError("simulation diverged")
@@ -231,3 +241,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

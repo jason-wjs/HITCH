@@ -58,6 +58,36 @@ Cleanup can take additional time if a robot action or model request is already r
 `observe`, `perceive` and `execute` consume the robot budget; initial observation counts.
 `finish` remains available after the robot budget is exhausted.
 
+## Native LocoManiLab tasks
+
+Prepare the pinned sources, independent Python environment and selected assets
+using [LOCOMANILAB_SETUP.md](LOCOMANILAB_SETUP.md). Then run an exact task ID
+from the pinned LocoManiLab `tasks.yaml`:
+
+```bash
+export WBC_BENCHMARK_PYTHON="$PWD/data/locomanilab/.venv/bin/python"
+scripts/coding locomanilab --provider dpsk \
+  --benchmark-task IThorKitchenApproachTableAndLiftApple_scene13 \
+  --seed 0 --root data/coding_native_apple \
+  --max-decisions 120 --max-calls 180 --wall-seconds 1800
+```
+
+Codex remains online throughout the episode and uses the same robot API. The
+native interpreter runs physics and cameras; the original HITCH environment
+still runs planning and HEFT control. Native task reset, stage updates, success
+checks and simulation-step limits are retained. The physical robot is HITCH's
+G1 with Dex3, rather than the benchmark's default robot/controller combination;
+this is recorded as an embodiment variant, not an official baseline reproduction.
+
+The private simulator directory contains `native_manifest.json` and
+`benchmark_result.json`. The runner stops the agent when the native task becomes
+terminal and copies its final score into `episode.json` under `check`. These
+files are outside the agent workspace. A valid task pass requires both native
+`success` and `genuine`; an early raw success below the native minimum-step
+threshold is reported separately. Agent self-assessment is never the task score.
+The native step budget applies in addition to the model, robot-call and wall
+budgets; paused model deliberation does not consume simulated task steps.
+
 ## Program interface
 
 The agent receives `ROBOT.md`, `initial.json` and the initial RGB image. `ROBOT.md` embeds
@@ -127,3 +157,4 @@ git diff --check
 The provider catalog follows the official DeepSeek Codex integration metadata, with
 a short project-owned instruction template:
 <https://api-docs.deepseek.com/quick_start/agent_integrations/codex/>.
+

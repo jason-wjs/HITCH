@@ -48,6 +48,10 @@ def start_simulator(directory: Path, target: str, timeout: float):
         command.append("--viewer")
     if options.get("checkpoint"):
         command += ["--checkpoint", options["checkpoint"]]
+    if scene == "locomanilab":
+        if not options.get("task"):
+            raise WbcError(ErrorCode.INVALID_REQUEST, "sim://locomanilab requires a task query parameter")
+        command += ["--benchmark-task", options["task"]]
     directory.mkdir(parents=True)
     with (directory / "launcher.log").open("ab") as log:
         process = subprocess.Popen(command, stdout=log, stderr=log, start_new_session=True)
@@ -83,3 +87,4 @@ def stop_process_group(pid: int, grace: float = 60.0) -> None:
         time.sleep(0.1)
     else:
         signal_group(pid, signal.SIGKILL)
+

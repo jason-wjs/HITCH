@@ -49,9 +49,9 @@ CAMERA = "wbc_link_server.sensors.vision"  # the module run as the camera proces
 VIEWER = "wbc_link_server.sensors.viewer"  # the module run as the window, with --viewer
 
 
-def module(name: str, *arguments) -> list[str]:
-    """The command line that runs module ``name`` in this Python."""
-    return [sys.executable, "-m", name, *map(str, arguments)]
+def module(name: str, *arguments, python: str | None = None) -> list[str]:
+    """Run module ``name`` with the selected interpreter (this Python by default)."""
+    return [python or sys.executable, "-m", name, *map(str, arguments)]
 
 
 def lease_directory(name: str) -> Path:
@@ -196,19 +196,21 @@ def bridge_arguments(args, directory, state_port, command_port) -> list:
     ]
 
 
-def start_camera(stack, args, directory):
+def start_camera(stack, args, directory, *, python=None):
     """The camera process on the bridge's MuJoCo scene (unless --no-vision); the vision URL or None."""
     if args.no_vision:
         return None
     stack.spawn(
         "vision",
-        module(CAMERA, "--directory", directory / "sim", "--endpoint-file", directory / "vision.json"),
+        module(CAMERA, "--directory", directory / "sim", "--endpoint-file", directory / "vision.json", python=python),
     )
     return stack.wait_for(directory / "vision.json", "vision")["vision"]
 
 
 def start_mujoco(stack, args, directory, state_port, command_port):
     """The MuJoCo bridge on one of our scenes and (unless --no-vision) its camera process; the vision URL or None."""
+    if args.scene == "locomanilab":
+        return start_locomanilab(stack, args, directory, state_port, command_port)
     stack.spawn(
         "bridge",
         module(
@@ -227,6 +229,36 @@ def start_mujoco(stack, args, directory, state_port, command_port):
     if args.viewer:  # a window on the bridge's scene; it needs a display, and nothing waits for it
         stack.spawn("viewer", module(VIEWER, "--directory", directory / "sim"), env={"MUJOCO_GL": "glfw"})
     return start_camera(stack, args, directory)
+
+
+def start_locomanilab(stack, args, directory, state_port, command_port):
+    """The native benchmark owns physics; HITCH policy/control keep their environment."""
+    python = os.environ.get("WBC_BENCHMARK_PYTHON")
+    if not python or not Path(python).is_file() or not os.access(python, os.X_OK):
+        raise ValueError("set WBC_BENCHMARK_PYTHON to the executable native benchmark Python")
+    if not args.benchmark_task:
+        raise ValueError("locomanilab requires --benchmark-task")
+    if args.heading_deg != 0:
+        raise ValueError("locomanilab uses the native task reset heading; omit --heading-deg")
+    stack.spawn(
+        "bridge",
+        module(
+            "wbc_link_server.bridges.locomanilab_bridge",
+            *bridge_arguments(args, directory, state_port, command_port),
+            "--benchmark-task",
+            args.benchmark_task,
+            "--seed",
+            args.seed,
+            python=python,
+        ),
+        env=NO_GL,
+    )
+    stack.wait_for(directory / "sim" / "bridge.json", "bridge")
+    if args.viewer:
+        stack.spawn(
+            "viewer", module(VIEWER, "--directory", directory / "sim", python=python), env={"MUJOCO_GL": "glfw"}
+        )
+    return start_camera(stack, args, directory, python=python)
 
 
 def start_policy(stack, args, directory, state_port, command_port) -> None:
@@ -277,6 +309,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--directory", type=Path, required=True)
     p.add_argument("--scene", default="flat")
+    p.add_argument("--benchmark-task", help="exact native LocoManiLab task ID")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--heading-deg", type=float, default=0.0, help="the robot's start heading")
     p.add_argument("--paused", action="store_true")
@@ -318,3 +351,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -14,6 +14,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlencode
 
 from wbc.agent import prompts
 from wbc.agent.loop import _check, _robot_down, _scene, _scene_task
@@ -145,7 +146,8 @@ def flat_metrics(sim: Path) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("task", choices=("flat_walk", "tabletop_pick"))
+    parser.add_argument("task", choices=("flat_walk", "tabletop_pick", "locomanilab"))
+    parser.add_argument("--benchmark-task", help="native LocoManiLab task ID from its pinned tasks.yaml")
     parser.add_argument("--provider", choices=tuple(PROVIDERS), default="deepseek")
     parser.add_argument("--root", type=Path, default=Path("data/coding"))
     parser.add_argument("--seed", type=int, default=0)
@@ -154,6 +156,8 @@ def main():
     parser.add_argument("--wall-seconds", type=int, default=1200)
     parser.add_argument("--probe", action="store_true", help="check runtime/model without starting a simulator")
     args = parser.parse_args()
+    if (args.task == "locomanilab") != bool(args.benchmark_task):
+        parser.error("--benchmark-task is required only for locomanilab")
     if min(args.max_decisions, args.max_calls, args.wall_seconds) <= 0:
         parser.error("budgets must be positive")
     provider = PROVIDERS[args.provider]
@@ -172,7 +176,16 @@ def main():
     if codex is None:
         parser.error("codex must be installed and on PATH")
     codex = Path(codex).resolve()
-    task = prompts.Task.load(args.task)
+    if args.task == "locomanilab":
+        task = prompts.Task(
+            name="locomanilab",
+            target="sim://locomanilab?" + urlencode({"task": args.benchmark_task, "seed": args.seed, "paused": 1}),
+            max_turns=args.max_decisions,
+            text=prompts.SCENE_TASK,
+            hand="dex3",
+        )
+    else:
+        task = prompts.Task.load(args.task)
     os.environ["WBC_HAND"] = task.hand
     root = args.root.resolve()
     record_dir = root / "episodes" / datetime.now().strftime("coding-%Y%m%d-%H%M%S-%f")
@@ -192,6 +205,8 @@ def main():
         "wall_seconds": args.wall_seconds,
         "codex_version": subprocess.check_output([str(codex), "--version"], text=True).strip(),
     }
+    if args.benchmark_task:
+        record["benchmark_task"] = args.benchmark_task
     record["hitch_commit"] = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=HERE.parents[2], text=True
     ).strip()
@@ -208,9 +223,7 @@ def main():
             catalog = Path(temp) / "models.json"
             write_catalog(HERE / "models.json", catalog, provider)
             # Bindable socket exists before checking the actual namespace layout.
-            server = Gateway(
-                bridge, None, record_dir, key, os.environ.get("HITCH_MODEL_PROXY"), args.max_decisions, provider
-            )
+            server = Gateway(bridge, None, record_dir, key, os.environ.get("HITCH_MODEL_PROXY"), args.max_decisions, provider)
             base = sandbox(workspace, bridge, codex, catalog)
             check = subprocess.run(
                 base
@@ -240,6 +253,8 @@ def main():
                 session = connected["session"]
                 record["session_id"] = connected["session_id"]
                 sim = root / "sessions" / connected["session_id"] / "runtime" / "sim"
+                if args.benchmark_task:
+                    record["benchmark"] = json.loads((sim / "native_manifest.json").read_text())
                 broker = server.broker = RobotBroker(session, workspace, record_dir, args.max_calls)
                 observation = broker.dispatch({"op": "observe", "args": {}})
                 if fault := _robot_down({"calls": observation["calls"]}):
@@ -259,6 +274,10 @@ def main():
                     f"Budget: {args.max_decisions} model requests, {args.max_calls} robot calls, "
                     f"{args.wall_seconds} wall seconds. Simulated time pauses while idle."
                 )
+                if args.benchmark_task:
+                    metadata = record["benchmark"]
+                    steps, frequency = metadata["max_steps"], metadata["control_freq"]
+                    prompt += f" Native task limit: {steps} control steps ({steps / frequency:.2f} simulated seconds)."
             (record_dir / "prompt.txt").write_text(prompt)
             with (record_dir / "codex.jsonl").open("w") as out, (record_dir / "codex.stderr").open("w") as err:
                 process = subprocess.Popen(
@@ -270,6 +289,11 @@ def main():
                 )
                 deadline = time.monotonic() + args.wall_seconds
                 while process.poll() is None:
+                    if args.benchmark_task:
+                        result = json.loads((sim / "benchmark_result.json").read_text())
+                        if result["terminal"]:
+                            record["stop"] = result["reason"]
+                            break
                     if time.monotonic() >= deadline or server.exhausted.is_set():
                         record["stop"] = "wall_budget" if time.monotonic() >= deadline else "model_budget"
                         break
@@ -305,7 +329,9 @@ def main():
             except Exception as error:
                 record["close_error"] = repr(error)
             else:
-                if "task_spec" in _scene(sim):
+                if args.benchmark_task:
+                    record["check"] = json.loads((sim / "benchmark_result.json").read_text())
+                elif "task_spec" in _scene(sim):
                     record["check"] = _check(sim)
                 elif task.name == "flat_walk":
                     record["flat_physics"] = flat_metrics(sim)
@@ -316,3 +342,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
