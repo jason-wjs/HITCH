@@ -48,6 +48,7 @@ class Profile:
     base_url: str
     model: str | None = None
     api_key_env: str | None = None
+    proxy_env: str | None = None  # optional environment variable holding the model API proxy URL
     extra_body: dict = field(default_factory=dict)  # merged into every request (reasoning effort, ...)
     max_output_tokens: int | None = None
     timeout_s: float = 600.0
@@ -253,7 +254,8 @@ def _sdk_response(profile: Profile, payload: dict, token: str, *, http_client=No
         base_url=profile.base_url,
         timeout=profile.timeout_s,
         max_retries=0,
-        http_client=http_client or DefaultHttpxClient(trust_env=False),
+        http_client=http_client
+        or DefaultHttpxClient(trust_env=False, proxy=os.environ.get(profile.proxy_env) if profile.proxy_env else None),
     ) as client:
         for attempt in range(profile.retries + 1):
             last = attempt == profile.retries

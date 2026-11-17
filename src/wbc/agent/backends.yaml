@@ -24,3 +24,15 @@ openai:  # a hosted API; the key is read from the environment
   model: gpt-5  # or --model
   extra_body:
     reasoning: {effort: medium}
+
+deepseek:
+  api: responses
+  base_url: https://api.deepseek.com
+  api_key_env: DEEPSEEK_API_KEY
+  proxy_env: HITCH_MODEL_PROXY
+  model: deepseek-flash
+  max_output_tokens: 32768
+  timeout_s: 180
+  retries: 1
+  extra_body:
+    reasoning: {effort: high}

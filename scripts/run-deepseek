@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""Run a HITCH task with DeepSeek; read the API key from the environment or a file."""
+
+import os
+import sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parents[1]
+env = dict(os.environ)
+if not env.get("DEEPSEEK_API_KEY"):
+    key_path = env.get("DEEPSEEK_API_KEY_FILE")
+    if not key_path:
+        sys.exit("Set DEEPSEEK_API_KEY or DEEPSEEK_API_KEY_FILE.")
+    key = Path(key_path).read_text().strip()
+    if not key:
+        sys.exit("DeepSeek key file is empty.")
+    env["DEEPSEEK_API_KEY"] = key
+os.execve(
+    str(root / "scripts/agent"), [str(root / "scripts/agent"), "run", *sys.argv[1:], "--backend", "deepseek"], env
+)
