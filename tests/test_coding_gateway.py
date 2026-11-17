@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from wbc.coding.gateway import Gateway
+from wbc.coding.providers import PROVIDERS
 
 
 class UnixConnection(http.client.HTTPConnection):
@@ -77,6 +78,21 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root / "model-001.request.json").read_text()), payload)
         self.assertEqual((self.root / "model-001.response").read_bytes(), content)
         self.assertNotIn("test-key", (self.root / "model-001.request.json").read_text())
+
+    def test_dpsk_routes_only_its_selected_model_without_logging_key(self):
+        self.gateway.provider = PROVIDERS["dpsk"]
+        status, body = self.post("/responses", {"model": "deepseek-flash"})
+        self.assertEqual(status, 400)
+        self.assertEqual(self.gateway.decisions, 0)
+        self.opener.open.assert_not_called()
+        self.opener.open.return_value = Upstream(b"done")
+        self.assertEqual(self.post("/responses", {"model": "deepseek-v4.1-flash"}), (200, b"done"))
+        request = self.opener.open.call_args.args[0]
+        self.assertEqual(request.full_url, "https://ai.cnjsbc.com/v1/responses")
+        self.assertEqual(json.loads(request.data)["model"], "deepseek-v4.1-flash")
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-key")
+        for path in self.root.glob("model-*"):
+            self.assertNotIn("test-key", path.read_text())
 
     def test_other_model_is_rejected_before_spending_budget(self):
         status, body = self.post("/responses", {"model": "another-model"})

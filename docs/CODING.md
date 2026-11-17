@@ -1,6 +1,6 @@
 # Entry B: Codex programs using the HITCH robot tools
 
-Entry B runs the installed Codex CLI with DeepSeek Flash. The model writes and executes
+Entry B runs the installed Codex CLI with a selected DeepSeek Responses provider. The model writes and executes
 Python programs, reads head-camera images, inspects structured results, and revises its
 program. Every program talks to one persistent `wbc.agent.tools.Tools` instance. Motion
 planning, perception, grip sequencing, HEFT tracking and MuJoCo are unchanged. Entry A
@@ -26,6 +26,25 @@ scripts/coding flat_walk --root data/coding_flat
 scripts/coding tabletop_pick --seed 0 --root data/coding_tabletop_seed0
 ```
 
+The default `--provider deepseek` preserves the official API baseline
+(`https://api.deepseek.com/responses`, `deepseek-flash`). Select the tested
+third-party provider explicitly:
+
+```bash
+export DEEPSEEK_API_KEY_FILE=/path/to/provider-key.md
+scripts/coding flat_walk --provider dpsk --probe --max-decisions 5 --wall-seconds 180
+scripts/coding tabletop_pick --provider dpsk --seed 0 --root data/dpsk_tabletop_seed0
+```
+
+`dpsk` uses `https://ai.cnjsbc.com/v1/responses` and `deepseek-v4.1-flash`.
+Both providers retain high reasoning effort and the 32,768 output-token cap.
+The gateway and Codex model catalog use the same selected model. The runtime
+catalog is a read-only per-run copy; the checked-in template and user configuration
+are unchanged. Provider, endpoint and requested model are recorded in `episode.json`;
+a provider's model label alone does not prove equivalence to another service.
+
+The key file may contain a plain `sk-` key or Markdown with exactly one such
+credential; zero or multiple credentials are rejected without printing the contents.
 `DEEPSEEK_API_KEY` may supply the key directly instead of the file. The parent reads
 the key; it is neither passed to generated programs nor written into episode logs.
 `HITCH_MODEL_PROXY` affects model traffic only. Omit it when a direct connection works.
@@ -66,7 +85,7 @@ after walking, measure again. Separate Python processes retain the same robot se
 
 The coding process has a writable `/workspace`, a read-only SDK and system runtime,
 and isolated PID/network namespaces. A private Unix socket offers only robot calls
-and the fixed DeepSeek Responses endpoint. The agent cannot read the repository,
+and the selected fixed Responses endpoint. The agent cannot read the repository,
 simulator state, scoring data, real home directory or model key. Codex's inner shell
 uses `danger-full-access` only inside this external bubblewrap sandbox. The simulator
 and API credentials stay in the trusted parent process. This is an experiment boundary,

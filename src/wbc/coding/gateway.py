@@ -11,11 +11,23 @@ from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
+from wbc.coding.providers import PROVIDERS, Provider
+
 
 class Gateway(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = False
 
-    def __init__(self, socket_path: Path, broker, record: Path, key: str, proxy: str | None, max_decisions: int):
+    def __init__(
+        self,
+        socket_path: Path,
+        broker,
+        record: Path,
+        key: str,
+        proxy: str | None,
+        max_decisions: int,
+        provider: Provider = PROVIDERS["deepseek"],
+    ):
+        self.provider = provider
         self.broker = broker
         self.record = record
         self.key = key
@@ -59,8 +71,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def model(self, payload):
         server = self.server
-        if payload.get("model") != "deepseek-flash":
-            raise ValueError("this experiment uses deepseek-flash")
+        if payload.get("model") != server.provider.model:
+            raise ValueError(f"this experiment uses {server.provider.model}")
         with server.lock:
             if server.decisions >= server.max_decisions:
                 server.exhausted.set()
@@ -76,7 +88,7 @@ class Handler(BaseHTTPRequestHandler):
             urllib.request.ProxyHandler({"https": server.proxy} if server.proxy else {})
         )
         request = urllib.request.Request(
-            "https://api.deepseek.com/responses",
+            server.provider.endpoint,
             data=json.dumps(payload).encode(),
             headers={"Authorization": f"Bearer {server.key}", "Content-Type": "application/json"},
         )

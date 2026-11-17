@@ -19,6 +19,7 @@ from wbc.agent import prompts
 from wbc.agent.loop import _check, _robot_down, _scene, _scene_task
 from wbc.coding.broker import RobotBroker
 from wbc.coding.gateway import Gateway
+from wbc.coding.providers import PROVIDERS, Provider, key_from_file, write_catalog
 from wbc.session import client
 
 HERE = Path(__file__).parent
@@ -60,14 +61,15 @@ def reference(hand):
     return GUIDE + "\n" + text + "\n\n" + prompts.template("tools")
 
 
-def sandbox(workspace: Path, bridge: Path, codex: Path) -> list[str]:
+def sandbox(workspace: Path, bridge: Path, codex: Path, catalog: Path) -> list[str]:
     command = ["bwrap", "--die-with-parent", "--new-session", "--unshare-all", "--clearenv"]
     for path in ("/usr", "/bin", "/lib", "/lib64", "/etc/alternatives", "/etc/ld.so.cache"):
         command += ["--ro-bind", path, path]
     command += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", str(Path.home())]
     command += ["--ro-bind", str(codex), "/app/codex"]
-    for name in ("robot.py", "relay.py", "models.json"):
+    for name in ("robot.py", "relay.py"):
         command += ["--ro-bind", str(HERE / name), f"/app/{name}"]
+    command += ["--ro-bind", str(catalog), "/app/models.json"]
     command += ["--ro-bind", str(bridge), "/bridge.sock", "--bind", str(workspace), "/workspace"]
     for name, value in {
         "HOME": str(Path.home()),
@@ -84,7 +86,7 @@ def sandbox(workspace: Path, bridge: Path, codex: Path) -> list[str]:
     return command + ["--chdir", "/workspace"]
 
 
-def codex_args(prompt: str, image: str | None) -> list[str]:
+def codex_args(prompt: str, image: str | None, provider: Provider = PROVIDERS["deepseek"]) -> list[str]:
     args = [
         "/usr/bin/python3",
         "/app/relay.py",
@@ -96,7 +98,7 @@ def codex_args(prompt: str, image: str | None) -> list[str]:
         "-s",
         "danger-full-access",
         "-m",
-        "deepseek-flash",
+        provider.model,
         "-C",
         "/workspace",
         "-o",
@@ -144,6 +146,7 @@ def flat_metrics(sim: Path) -> dict:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("task", choices=("flat_walk", "tabletop_pick"))
+    parser.add_argument("--provider", choices=tuple(PROVIDERS), default="deepseek")
     parser.add_argument("--root", type=Path, default=Path("data/coding"))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-decisions", type=int, default=40)
@@ -153,9 +156,16 @@ def main():
     args = parser.parse_args()
     if min(args.max_decisions, args.max_calls, args.wall_seconds) <= 0:
         parser.error("budgets must be positive")
+    provider = PROVIDERS[args.provider]
     key = os.environ.get("DEEPSEEK_API_KEY")
     if not key:
-        key = Path(os.environ["DEEPSEEK_API_KEY_FILE"]).read_text().strip()
+        key_path = os.environ.get("DEEPSEEK_API_KEY_FILE")
+        if not key_path:
+            parser.error("set DEEPSEEK_API_KEY or DEEPSEEK_API_KEY_FILE")
+        try:
+            key = key_from_file(Path(key_path))
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
     if not key:
         parser.error("empty DeepSeek key")
     codex = shutil.which("codex")
@@ -173,7 +183,9 @@ def main():
         "seed": args.seed,
         "started": time.time(),
         "probe": args.probe,
-        "model": "deepseek-flash",
+        "provider": args.provider,
+        "endpoint": provider.endpoint,
+        "model": provider.model,
         "reasoning": "high",
         "max_decisions": args.max_decisions,
         "max_calls": args.max_calls,
@@ -193,9 +205,13 @@ def main():
     try:
         with tempfile.TemporaryDirectory(prefix="hitch-coding-") as temp:
             bridge = Path(temp) / "bridge.sock"
+            catalog = Path(temp) / "models.json"
+            write_catalog(HERE / "models.json", catalog, provider)
             # Bindable socket exists before checking the actual namespace layout.
-            server = Gateway(bridge, None, record_dir, key, os.environ.get("HITCH_MODEL_PROXY"), args.max_decisions)
-            base = sandbox(workspace, bridge, codex)
+            server = Gateway(
+                bridge, None, record_dir, key, os.environ.get("HITCH_MODEL_PROXY"), args.max_decisions, provider
+            )
+            base = sandbox(workspace, bridge, codex, catalog)
             check = subprocess.run(
                 base
                 + [
@@ -246,7 +262,7 @@ def main():
             (record_dir / "prompt.txt").write_text(prompt)
             with (record_dir / "codex.jsonl").open("w") as out, (record_dir / "codex.stderr").open("w") as err:
                 process = subprocess.Popen(
-                    base + codex_args(prompt, initial),
+                    base + codex_args(prompt, initial, provider),
                     stdin=subprocess.DEVNULL,
                     stdout=out,
                     stderr=err,
