@@ -223,7 +223,9 @@ def main():
             catalog = Path(temp) / "models.json"
             write_catalog(HERE / "models.json", catalog, provider)
             # Bindable socket exists before checking the actual namespace layout.
-            server = Gateway(bridge, None, record_dir, key, os.environ.get("HITCH_MODEL_PROXY"), args.max_decisions, provider)
+            server = Gateway(
+                bridge, None, record_dir, key, os.environ.get("HITCH_MODEL_PROXY"), args.max_decisions, provider
+            )
             base = sandbox(workspace, bridge, codex, catalog)
             check = subprocess.run(
                 base
@@ -342,4 +344,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -23,8 +23,14 @@ class LaunchTests(unittest.TestCase):
         self.stack = Mock()
         self.stack.wait_for.return_value = {"vision": "http://camera", "control": "http://control"}
         self.args = SimpleNamespace(
-            scene="flat", seed=0, heading_deg=0, paused=True, no_vision=False,
-            viewer=False, checkpoint=None, benchmark_task="ExampleComposite_scene0",
+            scene="flat",
+            seed=0,
+            heading_deg=0,
+            paused=True,
+            no_vision=False,
+            viewer=False,
+            checkpoint=None,
+            benchmark_task="ExampleComposite_scene0",
         )
 
     def test_existing_scenes_keep_original_module_and_interpreter(self):
@@ -67,8 +73,10 @@ class LaunchTests(unittest.TestCase):
             path.write_text(json.dumps({"control": "http://control", "vision": "http://camera"}))
             return True
 
-        with patch("wbc.link.local.subprocess.Popen", return_value=process) as launch, \
-             patch("wbc.link.local.wait_for_file", side_effect=ready):
+        with (
+            patch("wbc.link.local.subprocess.Popen", return_value=process) as launch,
+            patch("wbc.link.local.wait_for_file", side_effect=ready),
+        ):
             start_simulator(directory, "sim://locomanilab?task=ExampleComposite_scene0&seed=2&paused=1", 30)
         command = launch.call_args.args[0]
         self.assertEqual(command[command.index("--benchmark-task") + 1], "ExampleComposite_scene0")

@@ -7,10 +7,12 @@ access requires a proxy, set `HTTP_PROXY` and `HTTPS_PROXY` before downloading.
 
 Verified: the three task classes register, all 4,511 selected asset files pass
 upstream SHA-256 checks, and both native scene XMLs compile and run 200 physics
-steps with finite qpos and qvel. Kitchen-task construction and static HITCH
-bridge checks also passed; bedroom-task reset, full HITCH control integration,
-and Codex closed-loop task success remain to be validated. The scene checks
-below do not load an agent, a controller, or robot hardware.
+steps with finite qpos and qvel. All three task resets and camera-export contracts
+passed. A kitchen smoke check obtained RGB images and executed a small torso
+motion through the original HITCH planner and HEFT, remained standing, and
+closed all four runtime processes cleanly. This is infrastructure validation;
+formal Codex task success has not been established. The scene checks below do
+not load an agent, a controller, or robot hardware.
 
 ## Pinned sources
 
@@ -142,3 +144,47 @@ The provisioned environment also retains `manifests/setup_manifest.json`,
 `logs/assets-download.log` under `data/locomanilab`. They record the source and
 asset pins, selected tasks, and setup checks. Generated data, caches, source
 checkouts, and the virtual environment stay outside Git.
+
+## Adapter contracts
+
+Run the real optional-dependency contracts in the isolated interpreter, without
+an API key or policy inference:
+
+```sh
+export WBC_HAND=dex3 MUJOCO_GL=disable PYNPUT_BACKEND=dummy PYTHONPATH=src
+data/locomanilab/.venv/bin/python tests/check_locomanilab_native.py
+data/locomanilab/.venv/bin/python tests/check_locomanilab_reset.py
+for task in \
+  IThorKitchenApproachTableAndLiftApple_scene13 \
+  IThorBedroomApproachDeskAndPutCanInBasket_scene329 \
+  IThorBedroomApproachDeskAndPutCanThenBoxedFoodInBasket_scene329
+do
+  data/locomanilab/.venv/bin/python tests/check_locomanilab_camera.py "$task"
+done
+```
+
+The camera contract checks a full scene, not just the robot: state and actuator
+indexing, static geometry, and synchronized world poses must match the native
+host. Export uses the original construction XML. MuJoCo's compiled-model XML
+export rounded tiny visual-geom masses from `1e-8` to zero in this asset set,
+preventing camera recompilation; preserving original precision fixes that
+without changing native physics.
+
+The full kitchen clock probe also verified that three seconds of wall-clock
+waiting before and after a motion did not advance simulation time once paused.
+HITCH's existing startup stabilization consumed 30 native steps (0.60 s) in that
+probe. Those steps remain included in the native task budget; no extra allowance
+was added. This fixed settling cost must be distinguished from provider latency.
+
+To repeat the full camera/control/paused-clock check without a model API:
+
+```sh
+WBC_HAND=dex3 PYNPUT_BACKEND=dummy MUJOCO_GL=egl \
+WBC_BENCHMARK_PYTHON="$PWD/data/locomanilab/.venv/bin/python" \
+scripts/run tests/check_locomanilab_stack.py
+```
+
+This launches one simulated kitchen session, makes a small torso motion, checks
+idle time before and after it, closes the session, and records results under
+`data/locomanilab/probe/pause_clock/`. It is an infrastructure check, not a
+successful benchmark episode.

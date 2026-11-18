@@ -52,6 +52,10 @@ class MJCFTests(unittest.TestCase):
         self.assertEqual(root.find(".//exclude").get("body1"), "pelvis")
         self.assertEqual(root.find(".//framepos").get("objname"), "palm")
 
+    def test_camera_translation_keeps_tiny_scene_mass_precision(self):
+        xml = '<mujoco><worldbody><body name="switch"><geom name="visual" mass="1e-08"/></body></worldbody></mujoco>'
+        self.assertEqual(ET.fromstring(camera_xml(xml)).find(".//geom").get("mass"), "1e-08")
+
 
 if __name__ == "__main__":
     unittest.main()

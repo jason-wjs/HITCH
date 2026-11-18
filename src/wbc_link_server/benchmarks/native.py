@@ -8,9 +8,9 @@ No benchmark object state or success information belongs in agent observations.
 from __future__ import annotations
 
 import copy
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
-import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
@@ -71,7 +71,7 @@ def register_robot(path: Path, initial: np.ndarray) -> None:
     from robosuite.models.robots.manipulators.g1_robot import G1FloatingBody as NativeG1
 
     hand = current_hand()
-    positions = dict(zip(JOINTS, initial[7:]))
+    positions = dict(zip(JOINTS, initial[7:], strict=True))
     for joint in ET.parse(path).iter("joint"):
         name = joint.get("name")
         if "_hand_" in name:
@@ -113,7 +113,8 @@ def register_robot(path: Path, initial: np.ndarray) -> None:
 def register_controller(initial: np.ndarray) -> dict:
     from robosuite.controllers import load_composite_controller_config
     from robosuite.controllers.composite.composite_controller import (
-        CompositeController, register_composite_controller,
+        CompositeController,
+        register_composite_controller,
     )
 
     @register_composite_controller
@@ -130,7 +131,7 @@ def register_controller(initial: np.ndarray) -> dict:
             self.command = None
 
         def spawn_joint_targets(self):
-            return list(zip(self.qadr, self.vadr, initial[7:]))
+            return list(zip(self.qadr, self.vadr, initial[7:], strict=True))
 
         def set_goal(self, action):
             pass
@@ -187,8 +188,8 @@ class NativeTask:
     """One native benchmark episode with private scoring and external HITCH PD."""
 
     def __init__(self, task_id: str, directory: Path, seed: int = 0, episode: int = 0):
-        from locomanilab.runtime.sim_client import apply_task_overrides
         import robocasa  # noqa: F401
+        from locomanilab.runtime.sim_client import apply_task_overrides
 
         self.directory = Path(directory)
         self.task_id, self.seed, self.episode = task_id, seed, episode
@@ -308,7 +309,10 @@ class NativeTask:
 
     def save_scene(self, path: Path):
         """Camera-only name translation; task evaluation retains prefixed native XML."""
-        Path(path).write_text(camera_xml(self.env.sim.model.get_xml()))
+        # mj_saveLastXML rounds the native scene's 1e-8 visual geom masses to
+        # zero, making some static bodies impossible to recompile. The source
+        # model retains their precision; live free-joint poses come via FrameRing.
+        Path(path).write_text(camera_xml(self.env.model.get_xml()))
 
     def close(self):
         self._write_score()

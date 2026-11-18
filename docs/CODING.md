@@ -158,3 +158,6 @@ The provider catalog follows the official DeepSeek Codex integration metadata, w
 a short project-owned instruction template:
 <https://api-docs.deepseek.com/quick_start/agent_integrations/codex/>.
 
+For recorded outcomes, see the [initial official-provider pilot](CODING_RESULTS.md)
+and [third-party provider tabletop trials](DPSK_RESULTS.md). Native infrastructure
+checks and successful benchmark task execution are reported separately.

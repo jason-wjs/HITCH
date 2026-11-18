@@ -13,8 +13,8 @@ import numpy as np
 
 from wbc.core.layout import JOINTS
 from wbc.robot.model import _model_xml
-from wbc_link_server.benchmarks.native import PREFIX, make_native_env
 from wbc_link_server.benchmarks.mjcf import camera_xml
+from wbc_link_server.benchmarks.native import PREFIX, make_native_env
 
 
 def main():
@@ -64,7 +64,7 @@ def main():
                 np.testing.assert_allclose(getattr(model, attr)[actual], getattr(reference, attr)[index],
                                            atol=1e-10, rtol=1e-8, err_msg=f"{name}: {attr}")
         # Compile the camera translation and check exact state / actuator order.
-        camera = mujoco.MjModel.from_xml_string(camera_xml(env.sim.model.get_xml()))
+        camera = mujoco.MjModel.from_xml_string(camera_xml(env.model.get_xml()))
         assert (camera.nq, camera.nv, camera.nu) == (model.nq, model.nv, model.nu)
         for index in range(model.njnt):
             assert camera.joint(index).name == model.joint(index).name.removeprefix(PREFIX)

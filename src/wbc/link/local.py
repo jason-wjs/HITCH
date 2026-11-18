@@ -87,4 +87,3 @@ def stop_process_group(pid: int, grace: float = 60.0) -> None:
         time.sleep(0.1)
     else:
         signal_group(pid, signal.SIGKILL)
-
