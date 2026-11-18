@@ -101,6 +101,13 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(self.gateway.decisions, 0)
         self.opener.open.assert_not_called()
 
+    def test_subscription_bridge_serves_robot_without_a_model_route(self):
+        self.gateway.provider = None
+        self.broker.dispatch.return_value = {"observation_id": "obs-1"}
+        self.assertEqual(self.post("/responses", {"model": "gpt-6.2-sol"})[0], 404)
+        self.assertEqual(self.post("/robot", {"op": "observe"})[0], 200)
+        self.opener.open.assert_not_called()
+
     def test_model_budget_limits_upstream_requests(self):
         self.opener.open.side_effect = [Upstream(b"first"), Upstream(b"second")]
         self.assertEqual(self.post("/responses", {"model": "deepseek-flash"}), (200, b"first"))

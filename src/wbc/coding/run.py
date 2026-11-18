@@ -12,14 +12,17 @@ import subprocess
 import tempfile
 import threading
 import time
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlencode
 
 from wbc.agent import prompts
 from wbc.agent.loop import _check, _robot_down, _scene, _scene_task
 from wbc.coding.broker import RobotBroker
 from wbc.coding.gateway import Gateway
 from wbc.coding.providers import PROVIDERS, Provider, key_from_file, write_catalog
+from wbc.coding.subscription import CHATGPT_MODEL, CHATGPT_REASONING, subscription_env
 from wbc.session import client
 
 HERE = Path(__file__).parent
@@ -61,7 +64,7 @@ def reference(hand):
     return GUIDE + "\n" + text + "\n\n" + prompts.template("tools")
 
 
-def sandbox(workspace: Path, bridge: Path, codex: Path, catalog: Path) -> list[str]:
+def sandbox(workspace: Path, bridge: Path, codex: Path, catalog: Path | None) -> list[str]:
     command = ["bwrap", "--die-with-parent", "--new-session", "--unshare-all", "--clearenv"]
     for path in ("/usr", "/bin", "/lib", "/lib64", "/etc/alternatives", "/etc/ld.so.cache"):
         command += ["--ro-bind", path, path]
@@ -69,8 +72,10 @@ def sandbox(workspace: Path, bridge: Path, codex: Path, catalog: Path) -> list[s
     command += ["--ro-bind", str(codex), "/app/codex"]
     for name in ("robot.py", "relay.py"):
         command += ["--ro-bind", str(HERE / name), f"/app/{name}"]
-    command += ["--ro-bind", str(catalog), "/app/models.json"]
-    command += ["--ro-bind", str(bridge), "/bridge.sock", "--bind", str(workspace), "/workspace"]
+    if catalog is not None:
+        command += ["--ro-bind", str(catalog), "/app/models.json"]
+    mount = "/workspace" if catalog is not None else str(workspace)
+    command += ["--ro-bind", str(bridge), "/bridge.sock", "--bind", str(workspace), mount]
     for name, value in {
         "HOME": str(Path.home()),
         "PATH": "/usr/bin:/bin",
@@ -83,13 +88,13 @@ def sandbox(workspace: Path, bridge: Path, codex: Path, catalog: Path) -> list[s
         "OMP_NUM_THREADS": "1",
     }.items():
         command += ["--setenv", name, value]
-    return command + ["--chdir", "/workspace"]
+    return command + ["--chdir", mount]
 
 
-def codex_args(prompt: str, image: str | None, provider: Provider = PROVIDERS["deepseek"]) -> list[str]:
+def codex_args(
+    prompt: str, image: str | None, provider: Provider | None = PROVIDERS["deepseek"], *, workspace="/workspace"
+) -> list[str]:
     args = [
-        "/usr/bin/python3",
-        "/app/relay.py",
         "--ignore-user-config",
         "--ignore-rules",
         "--skip-git-repo-check",
@@ -98,14 +103,18 @@ def codex_args(prompt: str, image: str | None, provider: Provider = PROVIDERS["d
         "-s",
         "danger-full-access",
         "-m",
-        provider.model,
+        provider.model if provider else CHATGPT_MODEL,
         "-C",
-        "/workspace",
+        workspace,
         "-o",
-        "/workspace/final.txt",
+        f"{workspace}/final.txt",
     ]
     settings = {
         "approval_policy": "never",
+        "web_search": "disabled",
+        "features.multi_agent": False,
+    }
+    deepseek_settings = {
         "model_provider": "deepseek",
         "model_providers.deepseek.name": "DeepSeek",
         "model_providers.deepseek.wire_api": "responses",
@@ -115,9 +124,21 @@ def codex_args(prompt: str, image: str | None, provider: Provider = PROVIDERS["d
         "model_providers.deepseek.stream_max_retries": 0,
         "model_catalog_json": "/app/models.json",
         "model_reasoning_effort": "high",
-        "web_search": "disabled",
-        "features.multi_agent": False,
     }
+    if provider:
+        args[:0] = ["/usr/bin/python3", "/app/relay.py"]
+        settings.update(deepseek_settings)
+    else:
+        settings.update(
+            {
+                "model_provider": "openai",
+                "model_reasoning_effort": CHATGPT_REASONING,
+                "shell_environment_policy.inherit": "none",
+                "shell_environment_policy.set.PATH": "/usr/bin:/bin",
+                "shell_environment_policy.set.PYTHONPATH": "/app",
+                "shell_environment_policy.set.HITCH_BRIDGE_SOCKET": "/bridge.sock",
+            }
+        )
     for key, value in settings.items():
         args += ["-c", f"{key}={json.dumps(value)}"]
     if image:
@@ -145,20 +166,26 @@ def flat_metrics(sim: Path) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("task", choices=("flat_walk", "tabletop_pick"))
-    parser.add_argument("--provider", choices=tuple(PROVIDERS), default="deepseek")
+    parser.add_argument("task", choices=("flat_walk", "tabletop_pick", "locomanilab"))
+    parser.add_argument("--benchmark-task", help="native LocoManiLab task ID from its pinned tasks.yaml")
+    parser.add_argument("--provider", choices=(*PROVIDERS, "chatgpt"), default="deepseek")
     parser.add_argument("--root", type=Path, default=Path("data/coding"))
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--max-decisions", type=int, default=40)
+    parser.add_argument("--max-decisions", type=int, help="maximum Responses requests for the DeepSeek providers")
     parser.add_argument("--max-calls", type=int, default=60)
     parser.add_argument("--wall-seconds", type=int, default=1200)
     parser.add_argument("--probe", action="store_true", help="check runtime/model without starting a simulator")
     args = parser.parse_args()
-    if min(args.max_decisions, args.max_calls, args.wall_seconds) <= 0:
+    if (args.task == "locomanilab") != bool(args.benchmark_task):
+        parser.error("--benchmark-task is required only for locomanilab")
+    provider = PROVIDERS.get(args.provider)
+    if provider is None and args.max_decisions is not None:
+        parser.error("--max-decisions is only available for the DeepSeek gateway")
+    decisions = args.max_decisions if args.max_decisions is not None else 40
+    if min(decisions, args.max_calls, args.wall_seconds) <= 0:
         parser.error("budgets must be positive")
-    provider = PROVIDERS[args.provider]
-    key = os.environ.get("DEEPSEEK_API_KEY")
-    if not key:
+    key = os.environ.get("DEEPSEEK_API_KEY", "") if provider else ""
+    if provider and not key:
         key_path = os.environ.get("DEEPSEEK_API_KEY_FILE")
         if not key_path:
             parser.error("set DEEPSEEK_API_KEY or DEEPSEEK_API_KEY_FILE")
@@ -166,13 +193,20 @@ def main():
             key = key_from_file(Path(key_path))
         except (ValueError, OSError) as error:
             parser.error(str(error))
-    if not key:
-        parser.error("empty DeepSeek key")
     codex = shutil.which("codex")
     if codex is None:
         parser.error("codex must be installed and on PATH")
     codex = Path(codex).resolve()
-    task = prompts.Task.load(args.task)
+    if args.task == "locomanilab":
+        task = prompts.Task(
+            name="locomanilab",
+            target="sim://locomanilab?" + urlencode({"task": args.benchmark_task, "seed": args.seed, "paused": 1}),
+            max_turns=decisions,
+            text=prompts.SCENE_TASK,
+            hand="dex3",
+        )
+    else:
+        task = prompts.Task.load(args.task)
     os.environ["WBC_HAND"] = task.hand
     root = args.root.resolve()
     record_dir = root / "episodes" / datetime.now().strftime("coding-%Y%m%d-%H%M%S-%f")
@@ -184,14 +218,16 @@ def main():
         "started": time.time(),
         "probe": args.probe,
         "provider": args.provider,
-        "endpoint": provider.endpoint,
-        "model": provider.model,
-        "reasoning": "high",
-        "max_decisions": args.max_decisions,
+        "endpoint": provider.endpoint if provider else "Codex built-in OpenAI provider",
+        "model": provider.model if provider else CHATGPT_MODEL,
+        "reasoning": "high" if provider else CHATGPT_REASONING,
+        "max_decisions": decisions if provider else None,
         "max_calls": args.max_calls,
         "wall_seconds": args.wall_seconds,
         "codex_version": subprocess.check_output([str(codex), "--version"], text=True).strip(),
     }
+    if args.benchmark_task:
+        record["benchmark_task"] = args.benchmark_task
     record["hitch_commit"] = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=HERE.parents[2], text=True
     ).strip()
@@ -203,14 +239,15 @@ def main():
     session = sim = process = server = broker = server_thread = None
     print(record_dir, flush=True)
     try:
-        with tempfile.TemporaryDirectory(prefix="hitch-coding-") as temp:
+        with tempfile.TemporaryDirectory(prefix="hitch-coding-") as temp, ExitStack() as stack:
             bridge = Path(temp) / "bridge.sock"
-            catalog = Path(temp) / "models.json"
-            write_catalog(HERE / "models.json", catalog, provider)
+            catalog = Path(temp) / "models.json" if provider else None
+            if provider:
+                write_catalog(HERE / "models.json", catalog, provider)
+            canary = Path(temp) / "host-only.txt"
+            canary.write_text("host-only canary")
             # Bindable socket exists before checking the actual namespace layout.
-            server = Gateway(
-                bridge, None, record_dir, key, os.environ.get("HITCH_MODEL_PROXY"), args.max_decisions, provider
-            )
+            server = Gateway(bridge, None, record_dir, key, os.environ.get("HITCH_MODEL_PROXY"), decisions, provider)
             base = sandbox(workspace, bridge, codex, catalog)
             check = subprocess.run(
                 base
@@ -218,7 +255,7 @@ def main():
                     "/usr/bin/python3",
                     "-c",
                     "import socket,pathlib,numpy,PIL; "
-                    "assert not pathlib.Path('/home/zhang/projects').exists(); "
+                    f"assert not pathlib.Path({str(canary)!r}).exists(); "
                     "s=socket.socket(); assert s.connect_ex(('127.0.0.1',7890)) != 0; "
                     "print('filesystem and network isolation checked')",
                 ],
@@ -228,11 +265,26 @@ def main():
             if check.returncode:
                 raise RuntimeError(check.stderr)
             record["isolation"] = check.stdout.strip()
+            public_workspace = "/workspace" if provider else str(workspace)
+            env = None
+            if provider is None:
+                env = stack.enter_context(subscription_env(codex, Path(temp), base, record_dir))
             server_thread = threading.Thread(target=server.serve_forever, daemon=True)
             server_thread.start()
             if args.probe:
-                prompt = "Write /workspace/probe.py that prints 6*7. Run it using python3 and report the result."
+                prompt = (
+                    f"Write {public_workspace}/probe.py that prints 6*7. Run it using python3 and report the result."
+                )
                 initial = None
+                if provider is None:
+                    from PIL import Image
+
+                    initial = str(workspace / "probe.png")
+                    Image.new("RGB", (64, 64), "blue").save(initial)
+                    prompt += (
+                        f" In that program assert {str(canary)!r} does not exist, that /bridge.sock exists, "
+                        "and that importing robot works. Open probe.png with the image tool and report its color."
+                    )
             else:
                 target = task.target + (f"&seed={args.seed}" if task.name == "tabletop_pick" else "")
                 record["target"] = target
@@ -240,12 +292,16 @@ def main():
                 session = connected["session"]
                 record["session_id"] = connected["session_id"]
                 sim = root / "sessions" / connected["session_id"] / "runtime" / "sim"
-                broker = server.broker = RobotBroker(session, workspace, record_dir, args.max_calls)
+                if args.benchmark_task:
+                    record["benchmark"] = json.loads((sim / "native_manifest.json").read_text())
+                broker = server.broker = RobotBroker(
+                    session, workspace, record_dir, args.max_calls, public_workspace=public_workspace
+                )
                 observation = broker.dispatch({"op": "observe", "args": {}})
                 if fault := _robot_down({"calls": observation["calls"]}):
                     raise RuntimeError(fault)
                 instruction = _scene_task(task, sim) if prompts.SCENE_TASK in task.text else task.text
-                (workspace / "ROBOT.md").write_text(reference(task.hand))
+                (workspace / "ROBOT.md").write_text(reference(task.hand).replace("/workspace", public_workspace))
                 (workspace / "initial.json").write_text(json.dumps(observation, indent=2))
                 images = observation.get("images", [])
                 initial = images[0] if images else None
@@ -256,20 +312,33 @@ def main():
                     "Read ROBOT.md and initial.json. The attached image is the initial head view. "
                     "Write and run a task program, inspect feedback and images, revise it if necessary, "
                     "and execute the revised stage in this same session. Finish with robot.finish. "
-                    f"Budget: {args.max_decisions} model requests, {args.max_calls} robot calls, "
+                    "Budget: "
+                    + (f"{decisions} model requests, " if provider else "")
+                    + f"{args.max_calls} robot calls, "
                     f"{args.wall_seconds} wall seconds. Simulated time pauses while idle."
                 )
+                if args.benchmark_task:
+                    metadata = record["benchmark"]
+                    steps, frequency = metadata["max_steps"], metadata["control_freq"]
+                    prompt += f" Native task limit: {steps} control steps ({steps / frequency:.2f} simulated seconds)."
             (record_dir / "prompt.txt").write_text(prompt)
             with (record_dir / "codex.jsonl").open("w") as out, (record_dir / "codex.stderr").open("w") as err:
                 process = subprocess.Popen(
-                    base + codex_args(prompt, initial, provider),
+                    (base if provider else [str(codex), "exec"])
+                    + codex_args(prompt, initial, provider, workspace=public_workspace),
                     stdin=subprocess.DEVNULL,
                     stdout=out,
                     stderr=err,
                     start_new_session=True,
+                    env=env,
                 )
                 deadline = time.monotonic() + args.wall_seconds
                 while process.poll() is None:
+                    if args.benchmark_task:
+                        result = json.loads((sim / "benchmark_result.json").read_text())
+                        if result["terminal"]:
+                            record["stop"] = result["reason"]
+                            break
                     if time.monotonic() >= deadline or server.exhausted.is_set():
                         record["stop"] = "wall_budget" if time.monotonic() >= deadline else "model_budget"
                         break
@@ -295,7 +364,7 @@ def main():
             server_thread.join()
         if server:
             server.server_close()
-            record["decisions"] = server.decisions
+            record["decisions"] = server.decisions if provider else None
         if broker:
             record["robot_calls"] = broker.calls
             record["self_report"] = broker.finished
@@ -305,7 +374,9 @@ def main():
             except Exception as error:
                 record["close_error"] = repr(error)
             else:
-                if "task_spec" in _scene(sim):
+                if args.benchmark_task:
+                    record["check"] = json.loads((sim / "benchmark_result.json").read_text())
+                elif "task_spec" in _scene(sim):
                     record["check"] = _check(sim)
                 elif task.name == "flat_walk":
                     record["flat_physics"] = flat_metrics(sim)
