@@ -25,7 +25,7 @@ class Gateway(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
         key: str,
         proxy: str | None,
         max_decisions: int,
-        provider: Provider = PROVIDERS["deepseek"],
+        provider: Provider | None = PROVIDERS["deepseek"],
     ):
         self.provider = provider
         self.broker = broker
@@ -60,9 +60,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             payload = json.loads(self.rfile.read(length))
-            if self.path == "/robot":
+            if self.path == "/robot" and self.server.broker is not None:
                 self.send_json(200, self.server.broker.dispatch(payload))
-            elif self.path == "/responses":
+            elif self.path == "/responses" and self.server.provider is not None:
                 self.model(payload)
             else:
                 self.send_json(404, {"error": "unknown endpoint"})

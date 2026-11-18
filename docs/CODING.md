@@ -1,6 +1,6 @@
 # Entry B: Codex programs using the HITCH robot tools
 
-Entry B runs the installed Codex CLI with a selected DeepSeek Responses provider. The model writes and executes
+Entry B runs the installed Codex CLI with DeepSeek or an official ChatGPT subscription. The model writes and executes
 Python programs, reads head-camera images, inspects structured results, and revises its
 program. Every program talks to one persistent `wbc.agent.tools.Tools` instance. Motion
 planning, perception, grip sequencing, HEFT tracking and MuJoCo are unchanged. Entry A
@@ -10,8 +10,7 @@ planning, perception, grip sequencing, HEFT tracking and MuJoCo are unchanged. E
 
 The existing HITCH setup and checkpoint are required, together with Codex CLI 0.166.0,
 Linux bubblewrap, and system Python 3 with NumPy and Pillow. The sandbox checks these
-before starting a session. This first entry supports the two simulation tasks only;
-it does not launch a real robot or add another simulator.
+before starting a session. The runner targets simulated HITCH and native LocoManiLab tasks.
 
 ```bash
 cd HITCH
@@ -57,6 +56,33 @@ drains in-flight requests, closes the HITCH session and runs independent scoring
 Cleanup can take additional time if a robot action or model request is already running.
 `observe`, `perceive` and `execute` consume the robot budget; initial observation counts.
 `finish` remains available after the robot budget is exhausted.
+
+## ChatGPT subscription
+
+The `chatgpt` provider selects `gpt-6.2-sol` with medium reasoning through the
+Codex CLI's built-in OpenAI provider. On the Linux host it requires `socat` and an
+existing file-based ChatGPT login that `codex login status` recognizes. If model
+traffic requires a proxy, set `HITCH_MODEL_PROXY`.
+
+```bash
+scripts/coding flat_walk --provider chatgpt --probe --wall-seconds 180
+scripts/coding tabletop_pick --provider chatgpt --seed 0 \
+  --max-calls 180 --wall-seconds 1800 --root data/gpt62_tabletop_seed0
+```
+
+The authenticated Codex process receives a temporary private login snapshot.
+Generated commands and file tools use a separate Codex execution server inside
+Bubblewrap. A loopback relay connects the trusted client to that worker. The
+worker sees the episode workspace, the read-only robot Python interface, and
+the robot socket. It uses a separate filesystem, PID and network namespace.
+The probe checks reading an image, writing and running Python, and visibility of
+a host-only test file and the worker-side robot socket.
+
+For subscription episodes the Codex JSONL includes tool events and token usage.
+Raw model requests do not traverse the HITCH gateway, so `--max-decisions` and
+per-request HTTP logs are specific to the DeepSeek providers. The robot-call,
+wall-clock and native-physics limits still apply. Select `--provider chatgpt` and
+omit `--max-decisions` to run a native LocoManiLab task with the subscription.
 
 ## Native LocoManiLab tasks
 
@@ -113,13 +139,11 @@ and `finished`; perception also returns `points`. An outdated observation ID is
 rejected before any action. Every observation establishes a new coordinate frame:
 after walking, measure again. Separate Python processes retain the same robot session.
 
-The coding process has a writable `/workspace`, a read-only SDK and system runtime,
-and isolated PID/network namespaces. A private Unix socket offers only robot calls
-and the selected fixed Responses endpoint. The agent cannot read the repository,
-simulator state, scoring data, real home directory or model key. Codex's inner shell
-uses `danger-full-access` only inside this external bubblewrap sandbox. The simulator
-and API credentials stay in the trusted parent process. This is an experiment boundary,
-not a claim of protection against kernel exploits or all local resource exhaustion.
+The coding process has a writable episode workspace, a read-only SDK and system
+runtime, and isolated PID/network namespaces. The private Unix socket offers robot
+calls and, for DeepSeek episodes, the selected fixed Responses endpoint. The
+simulator, evaluator, and model credentials remain on the host side. Codex uses
+`danger-full-access` for execution within the external Bubblewrap sandbox.
 
 ## Records and evaluation
 
@@ -130,7 +154,7 @@ Each printed episode directory contains:
   source snapshots and SHA-256 hashes under `programs/`.
 - `images/`: original observations outside the agent's writable workspace.
 - `codex.jsonl` and `codex.stderr`: runtime tool events and diagnostics.
-- `model-*.request.json` and `model-*.response`: model bodies/SSE, with no auth headers.
+- `model-*.request.json` and `model-*.response`: DeepSeek model bodies/SSE, with no auth headers.
 - `episode.json`: budgets, stop reason, session ID, self-report and independent score.
 
 Sessions and physics logs are under the same data root's `sessions/`. Tabletop uses
@@ -157,7 +181,3 @@ git diff --check
 The provider catalog follows the official DeepSeek Codex integration metadata, with
 a short project-owned instruction template:
 <https://api-docs.deepseek.com/quick_start/agent_integrations/codex/>.
-
-For recorded outcomes, see the [initial official-provider pilot](CODING_RESULTS.md)
-and [third-party provider tabletop trials](DPSK_RESULTS.md). Native infrastructure
-checks and successful benchmark task execution are reported separately.

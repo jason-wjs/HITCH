@@ -22,9 +22,12 @@ from wbc.agent.tools import Tools
 
 
 class RobotBroker:
-    def __init__(self, session: str, workspace: Path, record_dir: Path, max_calls: int = 60):
+    def __init__(
+        self, session: str, workspace: Path, record_dir: Path, max_calls: int = 60, *, public_workspace="/workspace"
+    ):
         self.workspace = Path(workspace).resolve()
         self.record_dir = Path(record_dir).resolve()
+        self.public_workspace = public_workspace
         self.workspace.mkdir(parents=True, exist_ok=True)
         (self.record_dir / "images").mkdir(parents=True, exist_ok=True)
         (self.record_dir / "programs").mkdir(exist_ok=True)
@@ -171,7 +174,7 @@ class RobotBroker:
                 target = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644, dir_fd=descriptor)
                 with os.fdopen(target, "wb") as stream:
                     stream.write(image.path.read_bytes())
-                public = f"/workspace/images/{name}"
+                public = f"{self.public_workspace}/images/{name}"
                 self._image_paths[image.label] = public
                 paths.append(public)
         finally:
